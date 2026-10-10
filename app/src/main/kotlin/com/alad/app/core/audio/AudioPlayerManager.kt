@@ -12,6 +12,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Streams Gemini's 24 kHz mono PCM output using the system media route.
@@ -23,9 +25,13 @@ class AudioPlayerManager(private val context: Context) {
         private const val SAMPLE_RATE = 24000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        private const val MAX_QUEUED_CHUNKS = 128
     }
 
     private val lock = Any()
+    private val playbackQueue = ArrayBlockingQueue<ByteArray>(MAX_QUEUED_CHUNKS)
+    @Volatile private var playbackActive = false
+    private var playbackThread: Thread? = null
     private val handler = Handler(Looper.getMainLooper())
     private val attributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -54,7 +60,10 @@ class AudioPlayerManager(private val context: Context) {
             Log.d(TAG, "Audio focus result: ${manager.requestAudioFocus(request)}")
         }
         started = true
+        playbackActive = true
+        playbackQueue.clear()
         createTrackLocked()
+        playbackThread = Thread({ playbackLoop() }, "ALAD-PCM-Playback").apply { start() }
         val callback = object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
                 onRouteChanged("added")
@@ -106,22 +115,53 @@ class AudioPlayerManager(private val context: Context) {
         }
     }
 
-    fun playAudioData(data: ByteArray) = synchronized(lock) {
-        if (!started || data.isEmpty()) return@synchronized
-        val track = audioTrack ?: run {
-            Log.w(TAG, "Gemini audio received but AudioTrack is unavailable")
-            return@synchronized
-        }
-        var offset = 0
-        while (offset < data.size && started) {
-            val written = track.write(data, offset, data.size - offset, AudioTrack.WRITE_BLOCKING)
-            if (written <= 0) {
-                Log.e(TAG, "AudioTrack write failed: $written; remaining=${data.size - offset}")
-                break
+    /**
+     * WebSocket callbacks must never wait for Bluetooth AudioTrack writes.
+     * Queue chunks for a dedicated playback thread instead.
+     */
+    fun playAudioData(data: ByteArray) {
+        if (!playbackActive || data.isEmpty()) return
+        if (!playbackQueue.offer(data)) {
+            // Prefer recent live dialogue over unbounded latency.
+            playbackQueue.poll()
+            if (!playbackQueue.offer(data)) {
+                Log.w(TAG, "Playback queue full; incoming audio chunk dropped")
+            } else {
+                Log.w(TAG, "Playback queue full; oldest audio chunk dropped")
             }
-            offset += written
         }
-        if (offset != data.size) Log.w(TAG, "Incomplete Gemini audio playback: $offset/${data.size} bytes")
+    }
+
+    private fun playbackLoop() {
+        while (playbackActive) {
+            try {
+                val data = playbackQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                synchronized(lock) {
+                    if (!started) return@synchronized
+                    val track = audioTrack ?: run {
+                        Log.w(TAG, "Gemini audio received but AudioTrack is unavailable")
+                        return@synchronized
+                    }
+                    var offset = 0
+                    while (offset < data.size && playbackActive) {
+                        val written = track.write(data, offset, data.size - offset, AudioTrack.WRITE_BLOCKING)
+                        if (written <= 0) {
+                            Log.e(TAG, "AudioTrack write failed: $written; remaining=${data.size - offset}")
+                            break
+                        }
+                        offset += written
+                    }
+                    if (offset != data.size) Log.w(TAG, "Incomplete Gemini audio playback: $offset/${data.size} bytes")
+                }
+                if (playbackQueue.size > MAX_QUEUED_CHUNKS / 2) {
+                    Log.w(TAG, "Playback backlog: ${playbackQueue.size} chunks")
+                }
+            } catch (e: InterruptedException) {
+                break
+            } catch (e: Exception) {
+                Log.e(TAG, "Playback worker failed", e)
+            }
+        }
     }
 
     fun setVolume(value: Float) = synchronized(lock) {
@@ -129,7 +169,12 @@ class AudioPlayerManager(private val context: Context) {
         audioTrack?.setVolume(volume)
     }
 
-    fun stop() = synchronized(lock) {
+    fun stop() {
+        playbackActive = false
+        playbackQueue.clear()
+        playbackThread?.interrupt()
+        playbackThread = null
+        synchronized(lock) {
         if (!started) return@synchronized
         started = false
         deviceCallback?.let { audioManager?.unregisterAudioDeviceCallback(it) }
@@ -140,6 +185,7 @@ class AudioPlayerManager(private val context: Context) {
         }
         focusRequest = null
         audioManager = null
+        }
     }
 
     private fun releaseTrackLocked() {
