@@ -49,6 +49,7 @@ class AudioDubbingForegroundService : Service() {
     private var audioPlayerManager: AudioPlayerManager? = null
     private var webSocketManager: ALADWebSocketManager? = null
     private var langObservationJob: Job? = null
+    private var receivedAudioChunks = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -109,6 +110,10 @@ class AudioDubbingForegroundService : Service() {
             }
             
             webSocketManager?.onBinaryMessageReceived = { audioChunk ->
+                receivedAudioChunks++
+                if (receivedAudioChunks % 50 == 0) {
+                    Log.d(TAG, "Received 50 more Gemini audio chunks; latest bytes=${audioChunk.size}")
+                }
                 audioPlayerManager?.playAudioData(audioChunk)
             }
             
