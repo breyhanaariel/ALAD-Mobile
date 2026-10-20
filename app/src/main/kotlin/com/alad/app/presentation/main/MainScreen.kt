@@ -14,6 +14,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -217,9 +219,10 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
 
                 // Status Indicator - Real-time Reactive
@@ -240,6 +243,62 @@ fun MainScreen(
                     isConnected = isConnected,
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
+
+                // Phase 3: saved media profiles (source preference is not yet a Gemini source lock).
+                val profile by viewModel.translationProfile.collectAsState()
+                val sourceLang by viewModel.sourceLang.collectAsState()
+                var sourceExpanded by remember { mutableStateOf(false) }
+                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Translation Profile", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text("Choose what you're watching. All presets dub into English.", color = TextSecondary, fontSize = 12.sp)
+                        val presets = listOf(
+                            "auto" to "Auto",
+                            "vix" to "ViX · Spanish",
+                            "kdrama" to "K-Drama · Korean",
+                            "cdrama" to "C-Drama · Mandarin",
+                            "anime" to "Anime · Japanese",
+                            "custom" to "Custom"
+                        )
+                        presets.chunked(2).forEach { pair ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                pair.forEach { (id, label) ->
+                                    OutlinedButton(
+                                        onClick = { if (id == "custom") viewModel.updateSourceLang(sourceLang) else viewModel.selectProfile(id) },
+                                        modifier = Modifier.weight(1f),
+                                        border = BorderStroke(1.dp, if (profile == id) NeonCyan else Color.White.copy(alpha = 0.25f)),
+                                        contentPadding = PaddingValues(horizontal = 4.dp)
+                                    ) {
+                                        Text(label, color = if (profile == id) NeonCyan else Color.White, fontSize = 11.sp, maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
+                        Text("Source: " + when (sourceLang) {
+                            "auto" -> "Auto-detect"
+                            "zh-CN" -> "Mandarin Chinese"
+                            "yue" -> "Cantonese"
+                            else -> supportedLanguages.find { it.first == sourceLang }?.second ?: sourceLang
+                        }, color = TextSecondary, fontSize = 12.sp)
+                        Box {
+                            OutlinedButton(onClick = { sourceExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                                Text("Custom source language", color = Color.White)
+                            }
+                            DropdownMenu(expanded = sourceExpanded, onDismissRequest = { sourceExpanded = false }) {
+                                val options = listOf("auto" to "Auto-detect", "es" to "Spanish", "ko" to "Korean",
+                                    "zh-CN" to "Mandarin Chinese", "yue" to "Cantonese", "ja" to "Japanese") +
+                                    supportedLanguages.filterNot { it.first in setOf("es", "ko", "zh", "ja") }
+                                options.forEach { (code, name) ->
+                                    DropdownMenuItem(text = { Text(name) }, onClick = {
+                                        viewModel.updateSourceLang(code)
+                                        sourceExpanded = false
+                                    })
+                                }
+                            }
+                        }
+                        Text("Source preference is saved; the current Gemini translation API has not yet verified source-language locking or smart detection.", color = TextSecondary, fontSize = 11.sp)
+                    }
+                }
 
                 // Language Selection Card
                 val targetLang by viewModel.targetLang.collectAsState()
