@@ -95,6 +95,7 @@ class AudioDubbingForegroundService : Service() {
             
             val apiKey = repository.apiKeyFlow.first()
             val targetLang = repository.targetLangFlow.first()
+            val sourceLang = repository.sourceLangFlow.first()
             val volumeRatio = repository.volumeRatioFlow.first()
             
             webSocketManager = ALADWebSocketManager(OkHttpClient())
@@ -117,23 +118,25 @@ class AudioDubbingForegroundService : Service() {
                 audioPlayerManager?.playAudioData(audioChunk)
             }
             
-            // sourceLang is no longer used for Bidi Setup
-            webSocketManager?.connect(apiKey, "", targetLang)
+            // Preserve the chosen source preference in the connection interface.
+            // The current translation API only documents target-language configuration.
+            webSocketManager?.connect(apiKey, sourceLang, targetLang)
             
             langObservationJob?.cancel()
             langObservationJob = serviceScope.launch {
-                var firstEmit = true
-                repository.targetLangFlow.collect { newLang ->
-                    if (firstEmit) {
-                        firstEmit = false
-                    } else {
+                // Observe both settings atomically; reconnect only when the effective
+                // translation configuration changes, not for unrelated preferences.
+                var previous: Pair<String, String>? = sourceLang to targetLang
+                repository.translationSettingsFlow.collect { current ->
+                    if (current != previous) {
+                        previous = current
                         val currentKey = repository.apiKeyFlow.first()
                         webSocketManager?.disconnect()
-                        webSocketManager?.connect(currentKey, "", newLang)
+                        webSocketManager?.connect(currentKey, current.first, current.second)
                     }
                 }
             }
-            
+
             audioCaptureManager = AudioCaptureManager()
             val appUid = applicationInfo.uid
             
