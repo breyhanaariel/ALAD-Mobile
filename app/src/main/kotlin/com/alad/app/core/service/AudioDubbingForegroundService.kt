@@ -57,6 +57,11 @@ class AudioDubbingForegroundService : Service() {
     private var firstResponseMs = 0L
     private var lastCaptureLogMs = 0L
     private var lastResponseLogMs = 0L
+    @Volatile private var lastAudibleCaptureMs = 0L
+    @Volatile private var sourceQuiet = false
+    private var lastQuietLogMs = 0L
+    private val silenceThreshold = 0.008f
+    private val quietAfterMs = 5000L
 
     override fun onCreate() {
         super.onCreate()
@@ -134,7 +139,14 @@ class AudioDubbingForegroundService : Service() {
                 if (receivedAudioChunks % 50 == 0) {
                     Log.d(TAG, "Received 50 more Gemini audio chunks; latest bytes=${audioChunk.size}")
                 }
-                audioPlayerManager?.playAudioData(audioChunk)
+                if (sourceQuiet) {
+                    if (now - lastQuietLogMs >= 2000L) {
+                        lastQuietLogMs = now
+                        Log.w(TAG, "Silence diagnostics: translated output still arriving after sustained quiet; suppressing late audio")
+                    }
+                } else {
+                    audioPlayerManager?.playAudioData(audioChunk)
+                }
             }
             
             // Preserve the chosen source preference in the connection interface.
@@ -171,8 +183,6 @@ class AudioDubbingForegroundService : Service() {
                         lastCaptureLogMs = now
                         Log.i(TAG, "Latency capture elapsedMs=${now - firstCaptureMs}, inputPcmMs=${captureBytes * 1000L / 32000L}, bytes=${pcmData.size}")
                     }
-                    webSocketManager?.sendAudioData(pcmData)
-                    
                     // Calculate RMS amplitude
                     var sum = 0.0
                     for (i in pcmData.indices step 2) {
@@ -185,6 +195,20 @@ class AudioDubbingForegroundService : Service() {
                     val rms = if (pcmData.isNotEmpty()) sqrt(sum / (pcmData.size / 2)).toFloat() else 0f
                     // Normalize and boost slightly for better visual effect (x3)
                     val normalized = (rms / 32767f * 3f).coerceIn(0f, 1f)
+                    if (normalized >= silenceThreshold) {
+                        lastAudibleCaptureMs = now
+                        if (sourceQuiet) {
+                            sourceQuiet = false
+                            Log.i(TAG, "Silence diagnostics: source resumed; translation output enabled")
+                        }
+                    } else if (lastAudibleCaptureMs > 0L && now - lastAudibleCaptureMs >= quietAfterMs) {
+                        if (!sourceQuiet) {
+                            sourceQuiet = true
+                            Log.w(TAG, "Silence diagnostics: sustained source quiet for ${now - lastAudibleCaptureMs}ms; suppressing late output")
+                        }
+                    }
+                    // Keep sending live input so the Gemini session stays synchronized.
+                    webSocketManager?.sendAudioData(pcmData)
                     
                     // Apply low-pass filter for smooth animation
                     val current = audioAmplitude.value
