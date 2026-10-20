@@ -51,6 +51,12 @@ class AudioDubbingForegroundService : Service() {
     private var webSocketManager: ALADWebSocketManager? = null
     private var langObservationJob: Job? = null
     private var receivedAudioChunks = 0
+    private var captureBytes = 0L
+    private var responseBytes = 0L
+    private var firstCaptureMs = 0L
+    private var firstResponseMs = 0L
+    private var lastCaptureLogMs = 0L
+    private var lastResponseLogMs = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -114,6 +120,16 @@ class AudioDubbingForegroundService : Service() {
             }
             
             webSocketManager?.onBinaryMessageReceived = { audioChunk ->
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (firstResponseMs == 0L) {
+                    firstResponseMs = now
+                    Log.i(TAG, "Latency response firstAudioMs=$now, sinceFirstCaptureMs=${if (firstCaptureMs > 0L) now - firstCaptureMs else -1L}")
+                }
+                responseBytes += audioChunk.size
+                if (now - lastResponseLogMs >= 2000L) {
+                    lastResponseLogMs = now
+                    Log.i(TAG, "Latency response elapsedMs=${now - firstResponseMs}, outputPcmMs=${responseBytes * 1000L / 48000L}, bytes=${audioChunk.size}, sinceLastCaptureMs=${if (lastCaptureLogMs > 0L) now - lastCaptureLogMs else -1L}")
+                }
                 receivedAudioChunks++
                 if (receivedAudioChunks % 50 == 0) {
                     Log.d(TAG, "Received 50 more Gemini audio chunks; latest bytes=${audioChunk.size}")
@@ -145,6 +161,16 @@ class AudioDubbingForegroundService : Service() {
             
             mediaProjection?.let { projection ->
                 audioCaptureManager?.startCapture(projection, appUid) { pcmData ->
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (firstCaptureMs == 0L) {
+                        firstCaptureMs = now
+                        Log.i(TAG, "Latency capture firstAudioMs=$now")
+                    }
+                    captureBytes += pcmData.size
+                    if (now - lastCaptureLogMs >= 2000L) {
+                        lastCaptureLogMs = now
+                        Log.i(TAG, "Latency capture elapsedMs=${now - firstCaptureMs}, inputPcmMs=${captureBytes * 1000L / 32000L}, bytes=${pcmData.size}")
+                    }
                     webSocketManager?.sendAudioData(pcmData)
                     
                     // Calculate RMS amplitude
