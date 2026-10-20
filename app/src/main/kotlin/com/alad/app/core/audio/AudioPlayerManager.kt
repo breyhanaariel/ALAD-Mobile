@@ -12,7 +12,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
 
 /**
@@ -25,11 +26,16 @@ class AudioPlayerManager(private val context: Context) {
         private const val SAMPLE_RATE = 24000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        private const val MAX_QUEUED_CHUNKS = 128
+        private const val BYTES_PER_SECOND = SAMPLE_RATE * 2 // mono 16-bit PCM
+        private const val MAX_PENDING_AUDIO_MS = 1500L
+        private const val MAX_PENDING_BYTES = BYTES_PER_SECOND * MAX_PENDING_AUDIO_MS / 1000L
     }
 
     private val lock = Any()
-    private val playbackQueue = ArrayBlockingQueue<ByteArray>(MAX_QUEUED_CHUNKS)
+    private val playbackQueue = LinkedBlockingDeque<ByteArray>()
+    private val pendingBytes = AtomicLong(0)
+    private val queueLock = Any()
+    private var lastBacklogWarningMs = 0L
     @Volatile private var playbackActive = false
     private var playbackThread: Thread? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -61,7 +67,7 @@ class AudioPlayerManager(private val context: Context) {
         }
         started = true
         playbackActive = true
-        playbackQueue.clear()
+        clearQueue()
         createTrackLocked()
         playbackThread = Thread({ playbackLoop() }, "ALAD-PCM-Playback").apply { start() }
         val callback = object : AudioDeviceCallback() {
@@ -78,8 +84,9 @@ class AudioPlayerManager(private val context: Context) {
 
     private fun onRouteChanged(reason: String) = synchronized(lock) {
         if (!started) return@synchronized
-        Log.d(TAG, "Output devices $reason; rebuilding media AudioTrack")
-        createTrackLocked()
+        // AudioTrack follows the system media route automatically. Recreating it
+        // for unrelated device events flushes audio and can cause audible gaps.
+        Log.i(TAG, "Output devices $reason; route=${audioTrack?.routedDevice?.type}")
     }
 
     private fun createTrackLocked() {
@@ -119,16 +126,35 @@ class AudioPlayerManager(private val context: Context) {
      * WebSocket callbacks must never wait for Bluetooth AudioTrack writes.
      * Queue chunks for a dedicated playback thread instead.
      */
+    private fun clearQueue() = synchronized(queueLock) {
+        playbackQueue.clear()
+        pendingBytes.set(0)
+    }
+
+    /**
+     * Bound the *duration* of queued 24 kHz PCM, not the number of packets.
+     * Dropping the oldest queued dialogue is preferable to drifting 10+ seconds
+     * behind a live video. Does not discard audio already inside AudioTrack.
+     */
     fun playAudioData(data: ByteArray) {
         if (!playbackActive || data.isEmpty()) return
-        if (!playbackQueue.offer(data)) {
-            // Prefer recent live dialogue over unbounded latency.
-            playbackQueue.poll()
-            if (!playbackQueue.offer(data)) {
-                Log.w(TAG, "Playback queue full; incoming audio chunk dropped")
-            } else {
-                Log.w(TAG, "Playback queue full; oldest audio chunk dropped")
+        synchronized(queueLock) {
+            if (!playbackActive) return
+            // A single oversized response can exceed the entire latency budget.
+            val incoming = if (data.size > MAX_PENDING_BYTES) {
+                data.copyOfRange(data.size - MAX_PENDING_BYTES.toInt(), data.size)
+            } else data
+            while (pendingBytes.get() + incoming.size > MAX_PENDING_BYTES) {
+                val dropped = playbackQueue.pollFirst() ?: break
+                pendingBytes.addAndGet(-dropped.size.toLong())
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastBacklogWarningMs >= 2000L) {
+                    Log.w(TAG, "Bluetooth/live playback backlog: dropping stale audio; pending=${pendingBytes.get() * 1000 / BYTES_PER_SECOND}ms")
+                    lastBacklogWarningMs = now
+                }
             }
+            playbackQueue.offerLast(incoming)
+            pendingBytes.addAndGet(incoming.size.toLong())
         }
     }
 
@@ -136,6 +162,9 @@ class AudioPlayerManager(private val context: Context) {
         while (playbackActive) {
             try {
                 val data = playbackQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                synchronized(queueLock) {
+                    pendingBytes.addAndGet(-data.size.toLong())
+                }
                 synchronized(lock) {
                     if (!started) return@synchronized
                     val track = audioTrack ?: run {
@@ -153,9 +182,9 @@ class AudioPlayerManager(private val context: Context) {
                     }
                     if (offset != data.size) Log.w(TAG, "Incomplete Gemini audio playback: $offset/${data.size} bytes")
                 }
-                if (playbackQueue.size > MAX_QUEUED_CHUNKS / 2) {
-                    Log.w(TAG, "Playback backlog: ${playbackQueue.size} chunks")
-                }
+                // Log bounded pending duration rather than packet count.
+                val pendingMs = pendingBytes.get() * 1000 / BYTES_PER_SECOND
+                if (pendingMs > 1000) Log.d(TAG, "Pending translated PCM: ${pendingMs}ms")
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
@@ -171,7 +200,7 @@ class AudioPlayerManager(private val context: Context) {
 
     fun stop() {
         playbackActive = false
-        playbackQueue.clear()
+        clearQueue()
         playbackThread?.interrupt()
         playbackThread = null
         synchronized(lock) {
