@@ -19,13 +19,16 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
         private const val GEMINI_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     }
 
-    private var isGeminiConnection = true
     private var isSetupComplete = false
+    private var userInitiatedClose = false
+    private var lastServerError: String? = null
 
     fun connect(apiKey: String, sourceLang: String, targetLang: String) {
         val finalUrl = "$GEMINI_WS_URL?key=$apiKey"
         val request = Request.Builder().url(finalUrl).build()
         isSetupComplete = false
+        userInitiatedClose = false
+        lastServerError = null
         
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -35,7 +38,7 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(TAG, "Raw message: $text")
+                Log.d(TAG, "Gemini response received (${text.length} chars)")
                 try {
                     val json = JSONObject(text)
                     
@@ -70,7 +73,8 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
                     } else if (json.has("error")) {
                         val errMessage = json.getJSONObject("error").optString("message", "Unknown error")
                         Log.e(TAG, "API Error: $errMessage")
-                        onStatusChanged?.invoke("Error: $errMessage")
+                        lastServerError = errMessage
+                        onStatusChanged?.invoke("Gemini rejected request: $errMessage")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing message", e)
@@ -85,37 +89,40 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 isSetupComplete = false
                 Log.d(TAG, "Closing: $code $reason")
-                onStatusChanged?.invoke("Disconnected: $reason")
+                if (!userInitiatedClose) {
+                    val detail = lastServerError ?: reason.ifBlank { "server closed connection" }
+                    onStatusChanged?.invoke("Gemini closed connection ($code): $detail")
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 isSetupComplete = false
                 Log.e(TAG, "WebSocket error", t)
-                onStatusChanged?.invoke("Error: ${t.message}")
+                if (!userInitiatedClose) onStatusChanged?.invoke("Connection failed: ${t.message ?: response?.message ?: "network error"}")
             }
         })
     }
     
     private fun sendGeminiSetup(targetLang: String) {
-        val targetLangCode = targetLang.split("-")[0]
+        // The raw v1beta BidiGenerateContent wire format places transcription
+        // configuration on setup, NOT inside generationConfig. The latter
+        // causes a WebSocket 1007 "Invalid JSON payload" response.
+        // Transcripts are not requested: ALAD is an audio-only dubbing app.
         val setupPayload = JSONObject().apply {
             put("setup", JSONObject().apply {
                 put("model", "models/gemini-3.5-live-translate-preview")
                 put("generationConfig", JSONObject().apply {
                     put("responseModalities", JSONArray().put("AUDIO"))
-                        put("inputAudioTranscription", JSONObject())
-                        put("outputAudioTranscription", JSONObject())
                     put("translationConfig", JSONObject().apply {
-                        put("targetLanguageCode", targetLangCode)
-                        put("echoTargetLanguage", true)
+                        put("targetLanguageCode", targetLang)
+                        put("echoTargetLanguage", false)
                     })
-                })
-                put("sessionResumption", JSONObject().apply {
-                    put("handle", JSONObject.NULL)
                 })
             })
         }
-        webSocket?.send(setupPayload.toString())
+        if (webSocket?.send(setupPayload.toString()) != true) {
+            onStatusChanged?.invoke("Unable to send Gemini setup request")
+        }
     }
 
     private val pendingAudio = mutableListOf<String>()
@@ -143,6 +150,8 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
     }
 
     fun disconnect() {
+        userInitiatedClose = true
+        isSetupComplete = false
         pendingAudio.clear()
         webSocket?.close(1000, "User requested stop")
         webSocket = null
