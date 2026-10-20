@@ -40,6 +40,8 @@ class AudioDubbingForegroundService : Service() {
         
         val isRunning = MutableStateFlow(false)
         val audioAmplitude = MutableStateFlow(0f)
+        val sourceTranscript = MutableStateFlow("")
+        val translatedTranscript = MutableStateFlow("")
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
@@ -87,6 +89,8 @@ class AudioDubbingForegroundService : Service() {
 
     private fun startDubbing(resultCode: Int, data: Intent) {
         isRunning.value = true
+        sourceTranscript.value = ""
+        translatedTranscript.value = ""
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, data)
         
@@ -110,6 +114,8 @@ class AudioDubbingForegroundService : Service() {
                 }
             }
             
+            webSocketManager?.onInputTranscript = { sourceTranscript.value = it }
+            webSocketManager?.onOutputTranscript = { translatedTranscript.value = it }
             webSocketManager?.onBinaryMessageReceived = { audioChunk ->
                 receivedAudioChunks++
                 if (receivedAudioChunks % 50 == 0) {
@@ -177,6 +183,8 @@ class AudioDubbingForegroundService : Service() {
         webSocketManager = null
         
         audioAmplitude.value = 0f
+        sourceTranscript.value = ""
+        translatedTranscript.value = ""
         
         langObservationJob?.cancel()
         langObservationJob = null
