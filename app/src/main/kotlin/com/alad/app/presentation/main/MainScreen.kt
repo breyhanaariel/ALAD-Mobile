@@ -238,6 +238,18 @@ fun MainScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                val connectionStatus by com.alad.app.core.service.AudioDubbingForegroundService.connectionStatus.collectAsState()
+                if (connectionStatus != "Disconnected") {
+                    Text(
+                        text = "Gemini: $connectionStatus",
+                        color = if (connectionStatus.startsWith("Gemini closed") ||
+                            connectionStatus.startsWith("Connection failed") ||
+                            connectionStatus.startsWith("Gemini rejected")) Color(0xFFFFA6A6) else TextSecondary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
                 // Neon Audio Waveform Visualizer
                 AnimatedWaveform(
                     isConnected = isConnected,
