@@ -189,8 +189,12 @@ class AudioPlayerManager(private val context: Context) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastMetricsMs >= 2000L) {
                     lastMetricsMs = now
-                    val framesWritten = track.playbackHeadPosition.toLong() and 0xffffffffL
-                    Log.d(TAG, "PCM diagnostics: queuedMs=$pendingMs, playbackHeadFrames=$framesWritten, trackBufferFrames=${track.bufferSizeInFrames}, route=${track.routedDevice?.type}")
+                    synchronized(lock) {
+                        audioTrack?.let { currentTrack ->
+                            val framesWritten = currentTrack.playbackHeadPosition.toLong() and 0xffffffffL
+                            Log.d(TAG, "PCM diagnostics: queuedMs=$pendingMs, playbackHeadFrames=$framesWritten, trackBufferFrames=${currentTrack.bufferSizeInFrames}, route=${currentTrack.routedDevice?.type}")
+                        }
+                    }
                 }
             } catch (e: InterruptedException) {
                 break
