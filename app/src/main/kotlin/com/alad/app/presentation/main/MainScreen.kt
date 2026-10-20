@@ -407,6 +407,25 @@ fun MainScreen(
                     }
                 }
 
+                // Transcription is provided by Gemini when the API supports it.
+                val sourceTranscript by com.alad.app.core.service.AudioDubbingForegroundService.sourceTranscript.collectAsState()
+                val translatedTranscript by com.alad.app.core.service.AudioDubbingForegroundService.translatedTranscript.collectAsState()
+                if (isConnected && (sourceTranscript.isNotBlank() || translatedTranscript.isNotBlank())) {
+                    GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+                        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Live Speech", color = Color.White, fontWeight = FontWeight.Bold)
+                            if (sourceTranscript.isNotBlank()) {
+                                Text("Original", color = NeonCyan, fontSize = 12.sp)
+                                Text(sourceTranscript, color = Color.White, fontSize = 13.sp)
+                            }
+                            if (translatedTranscript.isNotBlank()) {
+                                Text("Translated", color = NeonCyan, fontSize = 12.sp)
+                                Text(translatedTranscript, color = Color.White, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+
                 // Floating Widget Toggle Card
                 val isWidgetActive by com.alad.app.core.service.OverlayWidgetService.isWidgetActive.collectAsState()
                 GlassCard(
