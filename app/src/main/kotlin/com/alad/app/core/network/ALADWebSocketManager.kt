@@ -11,6 +11,8 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
     private var webSocket: WebSocket? = null
     var onBinaryMessageReceived: ((ByteArray) -> Unit)? = null
     var onStatusChanged: ((String) -> Unit)? = null
+    var onInputTranscript: ((String) -> Unit)? = null
+    var onOutputTranscript: ((String) -> Unit)? = null
 
     companion object {
         private const val TAG = "ALADWebSocketManager"
@@ -39,6 +41,12 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
                     
                     if (json.has("serverContent") || json.has("server_content")) {
                         val serverContent = json.optJSONObject("serverContent") ?: json.optJSONObject("server_content")
+                        if (serverContent != null) {
+                            val inputText = (serverContent.optJSONObject("inputTranscription") ?: serverContent.optJSONObject("input_transcription"))?.optString("text").orEmpty()
+                            val outputText = (serverContent.optJSONObject("outputTranscription") ?: serverContent.optJSONObject("output_transcription"))?.optString("text").orEmpty()
+                            if (inputText.isNotBlank()) onInputTranscript?.invoke(inputText)
+                            if (outputText.isNotBlank()) onOutputTranscript?.invoke(outputText)
+                        }
                         if (serverContent != null && (serverContent.has("modelTurn") || serverContent.has("model_turn"))) {
                             val modelTurn = serverContent.optJSONObject("modelTurn") ?: serverContent.optJSONObject("model_turn")
                             val parts = modelTurn?.optJSONArray("parts")
@@ -95,6 +103,8 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
                 put("model", "models/gemini-3.5-live-translate-preview")
                 put("generationConfig", JSONObject().apply {
                     put("responseModalities", JSONArray().put("AUDIO"))
+                        put("inputAudioTranscription", JSONObject())
+                        put("outputAudioTranscription", JSONObject())
                     put("translationConfig", JSONObject().apply {
                         put("targetLanguageCode", targetLangCode)
                         put("echoTargetLanguage", true)
