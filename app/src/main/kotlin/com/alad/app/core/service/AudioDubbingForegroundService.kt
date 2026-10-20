@@ -40,8 +40,7 @@ class AudioDubbingForegroundService : Service() {
         
         val isRunning = MutableStateFlow(false)
         val audioAmplitude = MutableStateFlow(0f)
-        val sourceTranscript = MutableStateFlow("")
-        val translatedTranscript = MutableStateFlow("")
+        val connectionStatus = MutableStateFlow("Disconnected")
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
@@ -89,8 +88,7 @@ class AudioDubbingForegroundService : Service() {
 
     private fun startDubbing(resultCode: Int, data: Intent) {
         isRunning.value = true
-        sourceTranscript.value = ""
-        translatedTranscript.value = ""
+        connectionStatus.value = "Connecting..."
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, data)
         
@@ -109,13 +107,12 @@ class AudioDubbingForegroundService : Service() {
             audioPlayerManager?.setVolume(volumeRatio)
             
             webSocketManager?.onStatusChanged = { status ->
+                connectionStatus.value = status
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     android.widget.Toast.makeText(applicationContext, "WS Status: $status", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
             
-            webSocketManager?.onInputTranscript = { sourceTranscript.value = it }
-            webSocketManager?.onOutputTranscript = { translatedTranscript.value = it }
             webSocketManager?.onBinaryMessageReceived = { audioChunk ->
                 receivedAudioChunks++
                 if (receivedAudioChunks % 50 == 0) {
@@ -183,8 +180,7 @@ class AudioDubbingForegroundService : Service() {
         webSocketManager = null
         
         audioAmplitude.value = 0f
-        sourceTranscript.value = ""
-        translatedTranscript.value = ""
+        connectionStatus.value = "Disconnected"
         
         langObservationJob?.cancel()
         langObservationJob = null
