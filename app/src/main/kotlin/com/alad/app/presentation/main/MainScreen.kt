@@ -244,59 +244,79 @@ fun MainScreen(
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
 
-                // Phase 3: saved media profiles (source preference is not yet a Gemini source lock).
+                // Source presets and individual languages share one selector.
                 val profile by viewModel.translationProfile.collectAsState()
                 val sourceLang by viewModel.sourceLang.collectAsState()
                 var sourceExpanded by remember { mutableStateOf(false) }
-                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
-                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Translation Profile", color = Color.White, fontWeight = FontWeight.Bold)
-                        Text("Choose what you're watching. All presets dub into English.", color = TextSecondary, fontSize = 12.sp)
-                        val presets = listOf(
-                            "auto" to "Auto",
-                            "vix" to "ViX · Spanish",
-                            "kdrama" to "K-Drama · Korean",
-                            "cdrama" to "C-Drama · Mandarin",
-                            "anime" to "Anime · Japanese",
-                            "custom" to "Custom"
-                        )
-                        presets.chunked(2).forEach { pair ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                                pair.forEach { (id, label) ->
-                                    OutlinedButton(
-                                        onClick = { if (id == "custom") viewModel.updateSourceLang(sourceLang) else viewModel.selectProfile(id) },
-                                        modifier = Modifier.weight(1f),
-                                        border = BorderStroke(1.dp, if (profile == id) NeonCyan else Color.White.copy(alpha = 0.25f)),
-                                        contentPadding = PaddingValues(horizontal = 4.dp)
-                                    ) {
-                                        Text(label, color = if (profile == id) NeonCyan else Color.White, fontSize = 11.sp, maxLines = 1)
-                                    }
-                                }
-                            }
-                        }
-                        Text("Source: " + when (sourceLang) {
-                            "auto" -> "Auto-detect"
+                var sourceSearch by remember { mutableStateOf("") }
+                val sourcePresets = listOf(
+                    "auto" to "Auto",
+                    "vix" to "ViX — Spanish",
+                    "kdrama" to "K-Drama — Korean",
+                    "cdrama" to "C-Drama — Mandarin",
+                    "anime" to "Anime — Japanese"
+                )
+                val sourceOptions = sourcePresets + supportedLanguages
+                    .filterNot { it.first == "auto" }
+                    .sortedBy { it.second.lowercase() }
+                    .map { "lang:" + it.first to it.second }
+                val selectedSource = if (profile in sourcePresets.map { it.first }) {
+                    sourcePresets.first { it.first == profile }.second
+                } else {
+                    supportedLanguages.find { it.first == sourceLang }?.second
+                        ?: when (sourceLang) {
                             "zh-CN" -> "Mandarin Chinese"
                             "yue" -> "Cantonese"
-                            else -> supportedLanguages.find { it.first == sourceLang }?.second ?: sourceLang
-                        }, color = TextSecondary, fontSize = 12.sp)
-                        Box {
-                            OutlinedButton(onClick = { sourceExpanded = true }, modifier = Modifier.fillMaxWidth()) {
-                                Text("Custom source language", color = Color.White)
-                            }
-                            DropdownMenu(expanded = sourceExpanded, onDismissRequest = { sourceExpanded = false }) {
-                                val options = listOf("auto" to "Auto-detect", "es" to "Spanish", "ko" to "Korean",
-                                    "zh-CN" to "Mandarin Chinese", "yue" to "Cantonese", "ja" to "Japanese") +
-                                    supportedLanguages.filterNot { it.first in setOf("es", "ko", "zh", "ja") }
-                                options.forEach { (code, name) ->
-                                    DropdownMenuItem(text = { Text(name) }, onClick = {
-                                        viewModel.updateSourceLang(code)
-                                        sourceExpanded = false
-                                    })
-                                }
+                            else -> sourceLang
+                        }
+                }
+                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Source Dubbing Language", color = TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        ExposedDropdownMenuBox(
+                            expanded = sourceExpanded,
+                            onExpandedChange = { sourceExpanded = it }
+                        ) {
+                            OutlinedTextField(
+                                value = if (sourceExpanded) sourceSearch else selectedSource,
+                                onValueChange = { sourceSearch = it },
+                                readOnly = !sourceExpanded,
+                                label = { Text("Select source", color = TextSecondary) },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = sourceExpanded) },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = Color(0x30FFFFFF),
+                                    unfocusedContainerColor = Color(0x15FFFFFF),
+                                    focusedBorderColor = NeonCyan,
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                ),
+                                modifier = Modifier.menuAnchor().fillMaxWidth()
+                            )
+                            ExposedDropdownMenu(
+                                expanded = sourceExpanded,
+                                onDismissRequest = { sourceExpanded = false; sourceSearch = "" },
+                                modifier = Modifier.background(Color(0xFF131D31))
+                            ) {
+                                sourceOptions.filter { it.second.contains(sourceSearch, ignoreCase = true) }
+                                    .forEach { (id, label) ->
+                                        DropdownMenuItem(
+                                            text = { Text(label, color = Color.White) },
+                                            onClick = {
+                                                if (id.startsWith("lang:")) {
+                                                    viewModel.updateSourceLang(id.removePrefix("lang:"))
+                                                } else {
+                                                    viewModel.selectProfile(id)
+                                                }
+                                                sourceExpanded = false
+                                                sourceSearch = ""
+                                            }
+                                        )
+                                    }
                             }
                         }
-                        Text("Source preference is saved; the current Gemini translation API has not yet verified source-language locking or smart detection.", color = TextSecondary, fontSize = 11.sp)
+                        Text("Presets save your source preference; Gemini Live currently detects spoken source language automatically.", color = TextSecondary, fontSize = 11.sp)
                     }
                 }
 
@@ -402,25 +422,6 @@ fun MainScreen(
                                         onClick = {}
                                     )
                                 }
-                            }
-                        }
-                    }
-                }
-
-                // Transcription is provided by Gemini when the API supports it.
-                val sourceTranscript by com.alad.app.core.service.AudioDubbingForegroundService.sourceTranscript.collectAsState()
-                val translatedTranscript by com.alad.app.core.service.AudioDubbingForegroundService.translatedTranscript.collectAsState()
-                if (isConnected && (sourceTranscript.isNotBlank() || translatedTranscript.isNotBlank())) {
-                    GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
-                        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Live Speech", color = Color.White, fontWeight = FontWeight.Bold)
-                            if (sourceTranscript.isNotBlank()) {
-                                Text("Original", color = NeonCyan, fontSize = 12.sp)
-                                Text(sourceTranscript, color = Color.White, fontSize = 13.sp)
-                            }
-                            if (translatedTranscript.isNotBlank()) {
-                                Text("Translated", color = NeonCyan, fontSize = 12.sp)
-                                Text(translatedTranscript, color = Color.White, fontSize = 13.sp)
                             }
                         }
                     }
