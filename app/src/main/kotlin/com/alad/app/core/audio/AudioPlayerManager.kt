@@ -38,6 +38,7 @@ class AudioPlayerManager(private val context: Context) {
     private val queueLock = Any()
     private var lastBacklogWarningMs = 0L
     private var lastMetricsMs = 0L
+    private var totalWrittenFrames = 0L
     @Volatile private var playbackActive = false
     private var playbackThread: Thread? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -68,6 +69,7 @@ class AudioPlayerManager(private val context: Context) {
             Log.d(TAG, "Audio focus result: ${manager.requestAudioFocus(request)}")
         }
         started = true
+        totalWrittenFrames = 0L
         playbackActive = true
         clearQueue()
         createTrackLocked()
@@ -181,6 +183,7 @@ class AudioPlayerManager(private val context: Context) {
                             break
                         }
                         offset += written
+                        totalWrittenFrames += written / 2L
                     }
                     if (offset != data.size) Log.w(TAG, "Incomplete Gemini audio playback: $offset/${data.size} bytes")
                 }
@@ -192,7 +195,7 @@ class AudioPlayerManager(private val context: Context) {
                     synchronized(lock) {
                         audioTrack?.let { currentTrack ->
                             val framesWritten = currentTrack.playbackHeadPosition.toLong() and 0xffffffffL
-                            Log.d(TAG, "PCM diagnostics: queuedMs=$pendingMs, playbackHeadFrames=$framesWritten, trackBufferFrames=${currentTrack.bufferSizeInFrames}, route=${currentTrack.routedDevice?.type}")
+                            Log.i(TAG, "PCM diagnostics: queuedMs=$pendingMs, writtenFrames=$totalWrittenFrames, playbackHeadFrames=$framesWritten, submittedMinusPlayedMs=${(totalWrittenFrames - framesWritten).coerceAtLeast(0L) * 1000L / SAMPLE_RATE}, trackBufferFrames=${currentTrack.bufferSizeInFrames}, route=${currentTrack.routedDevice?.type}")
                         }
                     }
                 }
