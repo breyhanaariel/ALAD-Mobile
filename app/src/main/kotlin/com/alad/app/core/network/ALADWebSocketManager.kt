@@ -22,6 +22,7 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
     private var isSetupComplete = false
     private var userInitiatedClose = false
     private var lastServerError: String? = null
+    private var lastQueueLogMs = 0L
 
     fun connect(apiKey: String, sourceLang: String, targetLang: String) {
         val finalUrl = "$GEMINI_WS_URL?key=$apiKey"
@@ -146,7 +147,14 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
                 })
             })
         }
-        webSocket?.send(inputPayload.toString())
+        val socket = webSocket ?: return
+        val sent = socket.send(inputPayload.toString())
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastQueueLogMs >= 2000L) {
+            lastQueueLogMs = now
+            Log.i(TAG, "Input transport diagnostics: websocketQueuedBytes=${socket.queueSize()}, sendAccepted=$sent, setupComplete=$isSetupComplete")
+        }
+        if (!sent) Log.w(TAG, "Gemini input audio send rejected; websocketQueuedBytes=${socket.queueSize()}")
     }
 
     fun disconnect() {
