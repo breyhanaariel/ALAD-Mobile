@@ -23,8 +23,11 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
     private var userInitiatedClose = false
     private var lastServerError: String? = null
     private var lastQueueLogMs = 0L
+    @Volatile private var connectionGeneration = 0L
 
     fun connect(apiKey: String, sourceLang: String, targetLang: String) {
+        val generation = ++connectionGeneration
+        pendingAudio.clear()
         val finalUrl = "$GEMINI_WS_URL?key=$apiKey"
         val request = Request.Builder().url(finalUrl).build()
         isSetupComplete = false
@@ -33,12 +36,14 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
         
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (generation != connectionGeneration) return
                 Log.d(TAG, "Connected to Gemini Live API")
                 onStatusChanged?.invoke("Connected")
                 sendGeminiSetup(targetLang)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (generation != connectionGeneration) return
                 Log.d(TAG, "Gemini response received (${text.length} chars)")
                 try {
                     val json = JSONObject(text)
@@ -88,6 +93,7 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                if (generation != connectionGeneration) return
                 isSetupComplete = false
                 Log.d(TAG, "Closing: $code $reason")
                 if (!userInitiatedClose) {
@@ -97,6 +103,7 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (generation != connectionGeneration) return
                 isSetupComplete = false
                 Log.e(TAG, "WebSocket error", t)
                 if (!userInitiatedClose) onStatusChanged?.invoke("Connection failed: ${t.message ?: response?.message ?: "network error"}")
@@ -158,6 +165,7 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
     }
 
     fun disconnect() {
+        connectionGeneration++
         userInitiatedClose = true
         isSetupComplete = false
         pendingAudio.clear()
