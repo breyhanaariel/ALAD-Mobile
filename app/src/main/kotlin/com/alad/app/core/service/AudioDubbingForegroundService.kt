@@ -59,6 +59,13 @@ class AudioDubbingForegroundService : Service() {
     private var lastResponseLogMs = 0L
     @Volatile private var lastAudibleCaptureMs = 0L
     @Volatile private var sourceQuiet = false
+    @Volatile private var lastResponseReceivedMs = 0L
+    @Volatile private var sessionStartedMs = 0L
+    private var lastRecoveryMs = 0L
+    private var lastActiveSourceMs = 0L
+    private var recoveryCount = 0
+    private val stallAfterMs = 9000L
+    private val recoveryCooldownMs = 30000L
     private var lastQuietLogMs = 0L
     private val silenceThreshold = 0.008f
     private val quietAfterMs = 5000L
@@ -99,6 +106,11 @@ class AudioDubbingForegroundService : Service() {
 
     private fun startDubbing(resultCode: Int, data: Intent) {
         isRunning.value = true
+        lastResponseReceivedMs = 0L
+        lastActiveSourceMs = 0L
+        lastRecoveryMs = 0L
+        recoveryCount = 0
+        sourceQuiet = false
         connectionStatus.value = "Connecting..."
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, data)
@@ -124,7 +136,9 @@ class AudioDubbingForegroundService : Service() {
                 }
             }
             
+            sessionStartedMs = android.os.SystemClock.elapsedRealtime()
             webSocketManager?.onBinaryMessageReceived = { audioChunk ->
+                lastResponseReceivedMs = android.os.SystemClock.elapsedRealtime()
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (firstResponseMs == 0L) {
                     firstResponseMs = now
@@ -139,14 +153,7 @@ class AudioDubbingForegroundService : Service() {
                 if (receivedAudioChunks % 50 == 0) {
                     Log.d(TAG, "Received 50 more Gemini audio chunks; latest bytes=${audioChunk.size}")
                 }
-                if (sourceQuiet) {
-                    if (now - lastQuietLogMs >= 2000L) {
-                        lastQuietLogMs = now
-                        Log.w(TAG, "Silence diagnostics: translated output still arriving after sustained quiet; suppressing late audio")
-                    }
-                } else {
-                    audioPlayerManager?.playAudioData(audioChunk)
-                }
+                audioPlayerManager?.playAudioData(audioChunk)
             }
             
             // Preserve the chosen source preference in the connection interface.
@@ -196,6 +203,7 @@ class AudioDubbingForegroundService : Service() {
                     // Normalize and boost slightly for better visual effect (x3)
                     val normalized = (rms / 32767f * 3f).coerceIn(0f, 1f)
                     if (normalized >= silenceThreshold) {
+                        lastActiveSourceMs = now
                         lastAudibleCaptureMs = now
                         if (sourceQuiet) {
                             sourceQuiet = false
@@ -207,7 +215,25 @@ class AudioDubbingForegroundService : Service() {
                             Log.w(TAG, "Silence diagnostics: sustained source quiet for ${now - lastAudibleCaptureMs}ms; suppressing late output")
                         }
                     }
-                    // Keep sending live input so the Gemini session stays synchronized.
+                    // Only restart after a sustained response stall during active source audio.
+                    // Do not restart for quiet scenes or short gaps between dialogue.
+                    val responseBaseline = if (lastResponseReceivedMs > sessionStartedMs) lastResponseReceivedMs else sessionStartedMs
+                    if (lastActiveSourceMs > 0L &&
+                        now - lastActiveSourceMs < 1000L &&
+                        now - responseBaseline >= stallAfterMs &&
+                        now - sessionStartedMs >= stallAfterMs &&
+                        now - lastRecoveryMs >= recoveryCooldownMs) {
+                        lastRecoveryMs = now
+                        recoveryCount++
+                        Log.w(TAG, "Recovery: stalled translated audio for ${now - responseBaseline}ms with active source; reconnecting session; attempt=$recoveryCount")
+                        val manager = webSocketManager
+                        if (manager != null) {
+                            manager.disconnect()
+                            sessionStartedMs = now
+                            lastResponseReceivedMs = 0L
+                            manager.connect(apiKey, sourceLang, targetLang)
+                        }
+                    }
                     webSocketManager?.sendAudioData(pcmData)
                     
                     // Apply low-pass filter for smooth animation
