@@ -24,6 +24,9 @@ class UserPreferencesRepository(private val context: Context) {
     val apiKeyFlow: Flow<String> = context.dataStore.data.map { it[API_KEY] ?: "" }
     val sourceLangFlow: Flow<String> = context.dataStore.data.map { it[SOURCE_LANG] ?: "en" }
     val targetLangFlow: Flow<String> = context.dataStore.data.map { it[TARGET_LANG] ?: "fa" }
+    val translationSettingsFlow: Flow<Pair<String, String>> = context.dataStore.data.map {
+        (it[SOURCE_LANG] ?: "auto") to (it[TARGET_LANG] ?: "en")
+    }
     val translationProfileFlow: Flow<String> = context.dataStore.data.map { it[TRANSLATION_PROFILE] ?: "custom" }
     val volumeRatioFlow: Flow<Float> = context.dataStore.data.map { it[VOLUME_RATIO] ?: 1.0f }
 
