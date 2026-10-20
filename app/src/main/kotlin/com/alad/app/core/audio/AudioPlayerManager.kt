@@ -28,6 +28,7 @@ class AudioPlayerManager(private val context: Context) {
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         private const val BYTES_PER_SECOND = SAMPLE_RATE * 2 // mono 16-bit PCM
         private const val MAX_PENDING_AUDIO_MS = 1500L
+        private const val TARGET_TRACK_BUFFER_MS = 160
         private const val MAX_PENDING_BYTES = BYTES_PER_SECOND * MAX_PENDING_AUDIO_MS / 1000L
     }
 
@@ -36,6 +37,7 @@ class AudioPlayerManager(private val context: Context) {
     private val pendingBytes = AtomicLong(0)
     private val queueLock = Any()
     private var lastBacklogWarningMs = 0L
+    private var lastMetricsMs = 0L
     @Volatile private var playbackActive = false
     private var playbackThread: Thread? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -104,7 +106,7 @@ class AudioPlayerManager(private val context: Context) {
                     .setChannelMask(CHANNEL_CONFIG)
                     .setEncoding(AUDIO_FORMAT)
                     .build(),
-                maxOf(minBuffer * 4, SAMPLE_RATE * 2 / 2),
+                maxOf(minBuffer, BYTES_PER_SECOND * TARGET_TRACK_BUFFER_MS / 1000),
                 AudioTrack.MODE_STREAM,
                 AudioManager.AUDIO_SESSION_ID_GENERATE
             )
@@ -116,7 +118,7 @@ class AudioPlayerManager(private val context: Context) {
             track.setVolume(volume)
             track.play()
             audioTrack = track
-            Log.i(TAG, "AudioTrack started; routed device type=${track.routedDevice?.type}")
+            Log.i(TAG, "AudioTrack started; route=${track.routedDevice?.type}; minBufferBytes=$minBuffer; actualBufferBytes=${track.bufferSizeInFrames * 2}; capacityFrames=${track.bufferCapacityInFrames}")
         } catch (e: Exception) {
             Log.e(TAG, "Cannot create playback track", e)
         }
@@ -184,7 +186,12 @@ class AudioPlayerManager(private val context: Context) {
                 }
                 // Log bounded pending duration rather than packet count.
                 val pendingMs = pendingBytes.get() * 1000 / BYTES_PER_SECOND
-                if (pendingMs > 1000) Log.d(TAG, "Pending translated PCM: ${pendingMs}ms")
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastMetricsMs >= 2000L) {
+                    lastMetricsMs = now
+                    val framesWritten = track.playbackHeadPosition.toLong() and 0xffffffffL
+                    Log.d(TAG, "PCM diagnostics: queuedMs=$pendingMs, playbackHeadFrames=$framesWritten, trackBufferFrames=${track.bufferSizeInFrames}, route=${track.routedDevice?.type}")
+                }
             } catch (e: InterruptedException) {
                 break
             } catch (e: Exception) {
