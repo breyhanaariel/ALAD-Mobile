@@ -27,7 +27,7 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
 
     fun connect(apiKey: String, sourceLang: String, targetLang: String) {
         val generation = ++connectionGeneration
-        pendingAudio.clear()
+        synchronized(pendingAudioLock) { pendingAudio.clear() }
         val finalUrl = "$GEMINI_WS_URL?key=$apiKey"
         val request = Request.Builder().url(finalUrl).build()
         isSetupComplete = false
@@ -74,8 +74,12 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
                     } else if (json.has("setupComplete") || json.has("setup_complete")) {
                         isSetupComplete = true
                         onStatusChanged?.invoke("Gemini Ready")
-                        pendingAudio.forEach { sendAudioNow(it) }
-                        pendingAudio.clear()
+                        val buffered = synchronized(pendingAudioLock) {
+                            val copy = pendingAudio.toList()
+                            pendingAudio.clear()
+                            copy
+                        }
+                        buffered.forEach { sendAudioNow(it) }
                     } else if (json.has("error")) {
                         val errMessage = json.getJSONObject("error").optString("message", "Unknown error")
                         Log.e(TAG, "API Error: $errMessage")
@@ -134,13 +138,16 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
     }
 
     private val pendingAudio = mutableListOf<String>()
+    private val pendingAudioLock = Any()
 
     fun sendAudioData(pcmData: ByteArray) {
         val base64Audio = Base64.encodeToString(pcmData, Base64.NO_WRAP)
-        if (!isSetupComplete) {
-            pendingAudio.add(base64Audio)
-            if (pendingAudio.size > 8) pendingAudio.removeAt(0)
-            return
+        synchronized(pendingAudioLock) {
+            if (!isSetupComplete) {
+                pendingAudio.add(base64Audio)
+                if (pendingAudio.size > 8) pendingAudio.removeAt(0)
+                return
+            }
         }
         sendAudioNow(base64Audio)
     }
@@ -168,7 +175,7 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
         connectionGeneration++
         userInitiatedClose = true
         isSetupComplete = false
-        pendingAudio.clear()
+        synchronized(pendingAudioLock) { pendingAudio.clear() }
         webSocket?.close(1000, "User requested stop")
         webSocket = null
         onStatusChanged?.invoke("Disconnected")
