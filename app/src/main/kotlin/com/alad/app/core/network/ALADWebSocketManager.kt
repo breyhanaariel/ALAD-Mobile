@@ -19,7 +19,7 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
         private const val GEMINI_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     }
 
-    private var isSetupComplete = false
+    @Volatile private var isSetupComplete = false
     private var userInitiatedClose = false
     private var lastServerError: String? = null
     private var lastQueueLogMs = 0L
@@ -72,14 +72,12 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
                             }
                         }
                     } else if (json.has("setupComplete") || json.has("setup_complete")) {
-                        isSetupComplete = true
-                        onStatusChanged?.invoke("Gemini Ready")
-                        val buffered = synchronized(pendingAudioLock) {
-                            val copy = pendingAudio.toList()
+                        synchronized(pendingAudioLock) {
+                            isSetupComplete = true
+                            pendingAudio.forEach { sendAudioNow(it) }
                             pendingAudio.clear()
-                            copy
                         }
-                        buffered.forEach { sendAudioNow(it) }
+                        onStatusChanged?.invoke("Gemini Ready")
                     } else if (json.has("error")) {
                         val errMessage = json.getJSONObject("error").optString("message", "Unknown error")
                         Log.e(TAG, "API Error: $errMessage")
@@ -146,10 +144,10 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
             if (!isSetupComplete) {
                 pendingAudio.add(base64Audio)
                 if (pendingAudio.size > 8) pendingAudio.removeAt(0)
-                return
+            } else {
+                sendAudioNow(base64Audio)
             }
         }
-        sendAudioNow(base64Audio)
     }
     
     private fun sendAudioNow(base64Audio: String) {
