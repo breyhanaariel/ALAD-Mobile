@@ -1,8 +1,9 @@
 name: Android CI
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "fix/bluetooth-audio-output" ]
     tags:
       - 'v*' # Trigger release on tags matching v*, e.g., v1.0.0
   pull_request:
@@ -30,11 +31,39 @@ jobs:
     - name: Build with Gradle (Debug APK)
       run: ./gradlew assembleDebug
 
+    - name: Build stable-signed upgrade APK
+      env:
+        ALAD_SIGNING_KEYSTORE_BASE64: ${{ secrets.ALAD_SIGNING_KEYSTORE_BASE64 }}
+        ALAD_SIGNING_STORE_PASSWORD: ${{ secrets.ALAD_SIGNING_STORE_PASSWORD }}
+        ALAD_SIGNING_KEY_ALIAS: ${{ secrets.ALAD_SIGNING_KEY_ALIAS }}
+        ALAD_SIGNING_KEY_PASSWORD: ${{ secrets.ALAD_SIGNING_KEY_PASSWORD }}
+        ALAD_VERSION_CODE: ${{ github.run_number }}
+        ALAD_SIGNING_STORE_FILE: ${{ github.workspace }}/alad-signing.jks
+      run: |
+        if [[ -z "$ALAD_SIGNING_KEYSTORE_BASE64" || -z "$ALAD_SIGNING_STORE_PASSWORD" || -z "$ALAD_SIGNING_KEY_ALIAS" || -z "$ALAD_SIGNING_KEY_PASSWORD" ]]; then
+          echo "::notice::Stable signing not configured; skipping signed upgrade APK"
+          exit 0
+        fi
+        printf '%s' "$ALAD_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$ALAD_SIGNING_STORE_FILE"
+        trap 'rm -f "$ALAD_SIGNING_STORE_FILE"' EXIT
+        ./gradlew assembleRelease
+        mkdir -p signed-output
+        cp app/build/outputs/apk/release/app-release.apk signed-output/alad-upgrade.apk
+
+    - name: Upload stable-signed upgrade APK
+      if: ${{ hashFiles('signed-output/alad-upgrade.apk') != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: alad-upgrade-signed
+        path: signed-output/alad-upgrade.apk
+        retention-days: 3
+
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
       with:
         name: alad-app-debug
         path: app/build/outputs/apk/debug/app-debug.apk
+        retention-days: 3
 
   release:
     name: Create GitHub Release
@@ -46,12 +75,12 @@ jobs:
     - name: Download APK from build job
       uses: actions/download-artifact@v4
       with:
-        name: alad-app-debug
+        name: alad-upgrade-signed
 
     - name: Release APK
       uses: softprops/action-gh-release@v2
       with:
-        files: app-debug.apk
+        files: alad-upgrade.apk
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

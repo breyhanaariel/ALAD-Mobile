@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,7 +13,7 @@ android {
         applicationId = "com.alad.app"
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
+        versionCode = providers.environmentVariable("ALAD_VERSION_CODE").orNull?.toIntOrNull() ?: 2
         versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -20,8 +22,26 @@ android {
         }
     }
 
+    val signingFile = providers.environmentVariable("ALAD_SIGNING_STORE_FILE").orNull
+    val signingPassword = providers.environmentVariable("ALAD_SIGNING_STORE_PASSWORD").orNull
+    val signingAlias = providers.environmentVariable("ALAD_SIGNING_KEY_ALIAS").orNull
+    val signingKeyPassword = providers.environmentVariable("ALAD_SIGNING_KEY_PASSWORD").orNull
+
+    signingConfigs {
+        if (!signingFile.isNullOrBlank() && !signingPassword.isNullOrBlank() &&
+            !signingAlias.isNullOrBlank() && !signingKeyPassword.isNullOrBlank()) {
+            create("aladStable") {
+                storeFile = File(signingFile)
+                storePassword = signingPassword
+                keyAlias = signingAlias
+                keyPassword = signingKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfigs.findByName("aladStable")?.let { signingConfig = it }
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }

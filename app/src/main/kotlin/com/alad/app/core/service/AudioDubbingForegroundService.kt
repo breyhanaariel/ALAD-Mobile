@@ -40,6 +40,7 @@ class AudioDubbingForegroundService : Service() {
         
         val isRunning = MutableStateFlow(false)
         val audioAmplitude = MutableStateFlow(0f)
+        val connectionStatus = MutableStateFlow("Disconnected")
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
@@ -49,6 +50,28 @@ class AudioDubbingForegroundService : Service() {
     private var audioPlayerManager: AudioPlayerManager? = null
     private var webSocketManager: ALADWebSocketManager? = null
     private var langObservationJob: Job? = null
+    private var receivedAudioChunks = 0
+    private var captureBytes = 0L
+    private var responseBytes = 0L
+    private var firstCaptureMs = 0L
+    private var firstResponseMs = 0L
+    private var lastCaptureLogMs = 0L
+    private var lastResponseLogMs = 0L
+    @Volatile private var lastAudibleCaptureMs = 0L
+    @Volatile private var sourceQuiet = false
+    @Volatile private var lastResponseReceivedMs = 0L
+    @Volatile private var sessionStartedMs = 0L
+    private var lastRecoveryMs = 0L
+    private var lastActiveSourceMs = 0L
+    @Volatile private var activeSourceLang = ""
+    @Volatile private var activeTargetLang = ""
+    @Volatile private var activeApiKey = ""
+    private var recoveryCount = 0
+    private val stallAfterMs = 9000L
+    private val recoveryCooldownMs = 30000L
+    private var lastQuietLogMs = 0L
+    private val silenceThreshold = 0.008f
+    private val quietAfterMs = 5000L
 
     override fun onCreate() {
         super.onCreate()
@@ -86,6 +109,21 @@ class AudioDubbingForegroundService : Service() {
 
     private fun startDubbing(resultCode: Int, data: Intent) {
         isRunning.value = true
+        firstCaptureMs = 0L
+        firstResponseMs = 0L
+        captureBytes = 0L
+        responseBytes = 0L
+        receivedAudioChunks = 0
+        lastCaptureLogMs = 0L
+        lastResponseLogMs = 0L
+        lastAudibleCaptureMs = 0L
+        lastQuietLogMs = 0L
+        lastResponseReceivedMs = 0L
+        lastActiveSourceMs = 0L
+        lastRecoveryMs = 0L
+        recoveryCount = 0
+        sourceQuiet = false
+        connectionStatus.value = "Connecting..."
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = projectionManager.getMediaProjection(resultCode, data)
         
@@ -94,7 +132,11 @@ class AudioDubbingForegroundService : Service() {
             
             val apiKey = repository.apiKeyFlow.first()
             val targetLang = repository.targetLangFlow.first()
+            val sourceLang = repository.sourceLangFlow.first()
             val volumeRatio = repository.volumeRatioFlow.first()
+            activeApiKey = apiKey
+            activeSourceLang = sourceLang
+            activeTargetLang = targetLang
             
             webSocketManager = ALADWebSocketManager(OkHttpClient())
             
@@ -103,39 +145,71 @@ class AudioDubbingForegroundService : Service() {
             audioPlayerManager?.setVolume(volumeRatio)
             
             webSocketManager?.onStatusChanged = { status ->
+                connectionStatus.value = status
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     android.widget.Toast.makeText(applicationContext, "WS Status: $status", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
             
+            sessionStartedMs = android.os.SystemClock.elapsedRealtime()
             webSocketManager?.onBinaryMessageReceived = { audioChunk ->
+                lastResponseReceivedMs = android.os.SystemClock.elapsedRealtime()
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (firstResponseMs == 0L) {
+                    firstResponseMs = now
+                    Log.i(TAG, "Latency response firstAudioMs=$now, sinceFirstCaptureMs=${if (firstCaptureMs > 0L) now - firstCaptureMs else -1L}")
+                }
+                responseBytes += audioChunk.size
+                if (now - lastResponseLogMs >= 2000L) {
+                    lastResponseLogMs = now
+                    Log.i(TAG, "Latency response elapsedMs=${now - firstResponseMs}, outputPcmMs=${responseBytes * 1000L / 48000L}, bytes=${audioChunk.size}, sinceLastCaptureMs=${if (lastCaptureLogMs > 0L) now - lastCaptureLogMs else -1L}")
+                }
+                receivedAudioChunks++
+                if (receivedAudioChunks % 50 == 0) {
+                    Log.d(TAG, "Received 50 more Gemini audio chunks; latest bytes=${audioChunk.size}")
+                }
                 audioPlayerManager?.playAudioData(audioChunk)
             }
             
-            // sourceLang is no longer used for Bidi Setup
-            webSocketManager?.connect(apiKey, "", targetLang)
+            // Preserve the chosen source preference in the connection interface.
+            // The current translation API only documents target-language configuration.
+            webSocketManager?.connect(apiKey, sourceLang, targetLang)
             
             langObservationJob?.cancel()
             langObservationJob = serviceScope.launch {
-                var firstEmit = true
-                repository.targetLangFlow.collect { newLang ->
-                    if (firstEmit) {
-                        firstEmit = false
-                    } else {
+                // Observe both settings atomically; reconnect only when the effective
+                // translation configuration changes, not for unrelated preferences.
+                var previous: Pair<String, String>? = sourceLang to targetLang
+                repository.translationSettingsFlow.collect { current ->
+                    if (current != previous) {
+                        previous = current
                         val currentKey = repository.apiKeyFlow.first()
+                        activeApiKey = currentKey
+                        activeSourceLang = current.first
+                        activeTargetLang = current.second
+                        sessionStartedMs = android.os.SystemClock.elapsedRealtime()
+                        lastResponseReceivedMs = 0L
                         webSocketManager?.disconnect()
-                        webSocketManager?.connect(currentKey, "", newLang)
+                        webSocketManager?.connect(currentKey, current.first, current.second)
                     }
                 }
             }
-            
+
             audioCaptureManager = AudioCaptureManager()
             val appUid = applicationInfo.uid
             
             mediaProjection?.let { projection ->
                 audioCaptureManager?.startCapture(projection, appUid) { pcmData ->
-                    webSocketManager?.sendAudioData(pcmData)
-                    
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (firstCaptureMs == 0L) {
+                        firstCaptureMs = now
+                        Log.i(TAG, "Latency capture firstAudioMs=$now")
+                    }
+                    captureBytes += pcmData.size
+                    if (now - lastCaptureLogMs >= 2000L) {
+                        lastCaptureLogMs = now
+                        Log.i(TAG, "Latency capture elapsedMs=${now - firstCaptureMs}, inputPcmMs=${captureBytes * 1000L / 32000L}, bytes=${pcmData.size}")
+                    }
                     // Calculate RMS amplitude
                     var sum = 0.0
                     for (i in pcmData.indices step 2) {
@@ -148,6 +222,39 @@ class AudioDubbingForegroundService : Service() {
                     val rms = if (pcmData.isNotEmpty()) sqrt(sum / (pcmData.size / 2)).toFloat() else 0f
                     // Normalize and boost slightly for better visual effect (x3)
                     val normalized = (rms / 32767f * 3f).coerceIn(0f, 1f)
+                    if (normalized >= silenceThreshold) {
+                        lastActiveSourceMs = now
+                        lastAudibleCaptureMs = now
+                        if (sourceQuiet) {
+                            sourceQuiet = false
+                            Log.i(TAG, "Silence diagnostics: source resumed; translation output enabled")
+                        }
+                    } else if (lastAudibleCaptureMs > 0L && now - lastAudibleCaptureMs >= quietAfterMs) {
+                        if (!sourceQuiet) {
+                            sourceQuiet = true
+                            Log.i(TAG, "Silence diagnostics: sustained source quiet for ${now - lastAudibleCaptureMs}ms; preserving translated output")
+                        }
+                    }
+                    // Only restart after a sustained response stall during active source audio.
+                    // Do not restart for quiet scenes or short gaps between dialogue.
+                    val responseBaseline = if (lastResponseReceivedMs > sessionStartedMs) lastResponseReceivedMs else sessionStartedMs
+                    if (lastActiveSourceMs > 0L &&
+                        now - lastActiveSourceMs < 1000L &&
+                        now - responseBaseline >= stallAfterMs &&
+                        now - sessionStartedMs >= stallAfterMs &&
+                        now - lastRecoveryMs >= recoveryCooldownMs) {
+                        lastRecoveryMs = now
+                        recoveryCount++
+                        Log.w(TAG, "Recovery: stalled translated audio for ${now - responseBaseline}ms with active source; reconnecting session; attempt=$recoveryCount")
+                        val manager = webSocketManager
+                        if (manager != null) {
+                            manager.disconnect()
+                            sessionStartedMs = now
+                            lastResponseReceivedMs = 0L
+                            manager.connect(activeApiKey, activeSourceLang, activeTargetLang)
+                        }
+                    }
+                    webSocketManager?.sendAudioData(pcmData)
                     
                     // Apply low-pass filter for smooth animation
                     val current = audioAmplitude.value
@@ -169,6 +276,7 @@ class AudioDubbingForegroundService : Service() {
         webSocketManager = null
         
         audioAmplitude.value = 0f
+        connectionStatus.value = "Disconnected"
         
         langObservationJob?.cancel()
         langObservationJob = null

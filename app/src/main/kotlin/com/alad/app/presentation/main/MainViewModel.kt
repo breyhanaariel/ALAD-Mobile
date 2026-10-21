@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -20,13 +21,27 @@ class MainViewModel(private val repository: UserPreferencesRepository) : ViewMod
     private val _statusMessage = MutableStateFlow("Disconnected")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
     
+    val translationProfile: StateFlow<String> = repository.translationProfileFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "custom")
     val sourceLang: StateFlow<String> = repository.sourceLangFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "en")
     val targetLang: StateFlow<String> = repository.targetLangFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "fa")
 
     fun updateSourceLang(lang: String) {
-        viewModelScope.launch { repository.updateSourceLang(lang) }
+        viewModelScope.launch { repository.updateProfileAndLanguages("custom", lang, repository.targetLangFlow.first()) }
+    }
+
+    fun selectProfile(profile: String) {
+        val source = when (profile) {
+            "vix" -> "es"
+            "kdrama" -> "ko"
+            "cdrama" -> "zh-CN"
+            "anime" -> "ja"
+            "auto" -> "auto"
+            else -> return
+        }
+        viewModelScope.launch { repository.updateProfileAndLanguages(profile, source, "en") }
     }
 
     fun updateTargetLang(lang: String) {

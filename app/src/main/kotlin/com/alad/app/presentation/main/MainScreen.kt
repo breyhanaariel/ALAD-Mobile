@@ -14,6 +14,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -217,9 +219,10 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
 
                 // Status Indicator - Real-time Reactive
@@ -235,11 +238,99 @@ fun MainScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                val connectionStatus by com.alad.app.core.service.AudioDubbingForegroundService.connectionStatus.collectAsState()
+                if (connectionStatus != "Disconnected") {
+                    Text(
+                        text = "Gemini: $connectionStatus",
+                        color = if (connectionStatus.startsWith("Gemini closed") ||
+                            connectionStatus.startsWith("Connection failed") ||
+                            connectionStatus.startsWith("Gemini rejected")) Color(0xFFFFA6A6) else TextSecondary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
                 // Neon Audio Waveform Visualizer
                 AnimatedWaveform(
                     isConnected = isConnected,
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
+
+                // Source presets and individual languages share one selector.
+                val profile by viewModel.translationProfile.collectAsState()
+                val sourceLang by viewModel.sourceLang.collectAsState()
+                var sourceExpanded by remember { mutableStateOf(false) }
+                var sourceSearch by remember { mutableStateOf("") }
+                val sourcePresets = listOf(
+                    "auto" to "Auto",
+                    "vix" to "ViX — Spanish",
+                    "kdrama" to "K-Drama — Korean",
+                    "cdrama" to "C-Drama — Mandarin",
+                    "anime" to "Anime — Japanese"
+                )
+                val sourceOptions = sourcePresets + supportedLanguages
+                    .filterNot { it.first == "auto" }
+                    .sortedBy { it.second.lowercase() }
+                    .map { "lang:" + it.first to it.second }
+                val selectedSource = if (profile in sourcePresets.map { it.first }) {
+                    sourcePresets.first { it.first == profile }.second
+                } else {
+                    supportedLanguages.find { it.first == sourceLang }?.second
+                        ?: when (sourceLang) {
+                            "zh-CN" -> "Mandarin Chinese"
+                            "yue" -> "Cantonese"
+                            else -> sourceLang
+                        }
+                }
+                GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+                    Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Source Dubbing Language", color = TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        ExposedDropdownMenuBox(
+                            expanded = sourceExpanded,
+                            onExpandedChange = { sourceExpanded = it }
+                        ) {
+                            OutlinedTextField(
+                                value = if (sourceExpanded) sourceSearch else selectedSource,
+                                onValueChange = { sourceSearch = it },
+                                readOnly = !sourceExpanded,
+                                label = { Text("Select source", color = TextSecondary) },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = sourceExpanded) },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedContainerColor = Color(0x30FFFFFF),
+                                    unfocusedContainerColor = Color(0x15FFFFFF),
+                                    focusedBorderColor = NeonCyan,
+                                    unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                ),
+                                modifier = Modifier.menuAnchor().fillMaxWidth()
+                            )
+                            ExposedDropdownMenu(
+                                expanded = sourceExpanded,
+                                onDismissRequest = { sourceExpanded = false; sourceSearch = "" },
+                                modifier = Modifier.background(Color(0xFF131D31))
+                            ) {
+                                sourceOptions.filter { it.second.contains(sourceSearch, ignoreCase = true) }
+                                    .forEach { (id, label) ->
+                                        DropdownMenuItem(
+                                            text = { Text(label, color = Color.White) },
+                                            onClick = {
+                                                if (id.startsWith("lang:")) {
+                                                    viewModel.updateSourceLang(id.removePrefix("lang:"))
+                                                } else {
+                                                    viewModel.selectProfile(id)
+                                                }
+                                                sourceExpanded = false
+                                                sourceSearch = ""
+                                            }
+                                        )
+                                    }
+                            }
+                        }
+                        Text("Presets save your source preference; Gemini Live currently detects spoken source language automatically.", color = TextSecondary, fontSize = 11.sp)
+                    }
+                }
 
                 // Language Selection Card
                 val targetLang by viewModel.targetLang.collectAsState()
