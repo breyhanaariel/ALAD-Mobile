@@ -100,18 +100,52 @@ class AudioPlayerManager(private val context: Context) {
             Log.e(TAG, "Invalid minimum AudioTrack buffer size: $minBuffer")
             return
         }
-        try {
-            val track = AudioTrack(
-                attributes,
-                AudioFormat.Builder()
+        val bufferBytes = maxOf(minBuffer, BYTES_PER_SECOND * TARGET_TRACK_BUFFER_MS / 1000)
+        val manager = audioManager
+        val bluetoothPresent = manager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)?.any {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+        } == true
+
+        fun buildTrack(lowLatency: Boolean): AudioTrack =
+            AudioTrack.Builder()
+                .setAudioAttributes(attributes)
+                .setAudioFormat(AudioFormat.Builder()
                     .setSampleRate(SAMPLE_RATE)
                     .setChannelMask(CHANNEL_CONFIG)
                     .setEncoding(AUDIO_FORMAT)
-                    .build(),
-                maxOf(minBuffer, BYTES_PER_SECOND * TARGET_TRACK_BUFFER_MS / 1000),
-                AudioTrack.MODE_STREAM,
-                AudioManager.AUDIO_SESSION_ID_GENERATE
-            )
+                    .build())
+                .setBufferSizeInBytes(bufferBytes)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(if (lowLatency) AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+                    else AudioTrack.PERFORMANCE_MODE_NONE)
+                .build()
+
+        var track: AudioTrack? = null
+        var lowLatencyEnabled = false
+        if (bluetoothPresent) {
+            try {
+                val candidate = buildTrack(true)
+                if (candidate.state == AudioTrack.STATE_INITIALIZED &&
+                    candidate.performanceMode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY) {
+                    track = candidate
+                    lowLatencyEnabled = true
+                } else {
+                    Log.i(TAG, "Bluetooth low-latency mode unavailable; using normal playback")
+                    candidate.release()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Bluetooth low-latency setup failed; using normal playback", e)
+            }
+        }
+        if (track == null) {
+            try {
+                track = buildTrack(false)
+            } catch (e: Exception) {
+                Log.e(TAG, "Cannot create normal AudioTrack", e)
+                return
+            }
+        }
+        try {
             if (track.state != AudioTrack.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioTrack failed to initialize")
                 track.release()
@@ -120,9 +154,10 @@ class AudioPlayerManager(private val context: Context) {
             track.setVolume(volume)
             track.play()
             audioTrack = track
-            Log.i(TAG, "AudioTrack started; route=${track.routedDevice?.type}; minBufferBytes=$minBuffer; actualBufferBytes=${track.bufferSizeInFrames * 2}; capacityFrames=${track.bufferCapacityInFrames}")
+            Log.i(TAG, "AudioTrack started; route=${track.routedDevice?.type}; minBufferBytes=$minBuffer; actualBufferBytes=${track.bufferSizeInFrames * 2}; capacityFrames=${track.bufferCapacityInFrames}; bluetoothPresent=$bluetoothPresent; lowLatencyEnabled=$lowLatencyEnabled; performanceMode=${track.performanceMode}")
         } catch (e: Exception) {
-            Log.e(TAG, "Cannot create playback track", e)
+            Log.e(TAG, "Cannot start playback track", e)
+            track.release()
         }
     }
 
