@@ -27,6 +27,7 @@ class AudioPlayerManager(private val context: Context) {
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         private const val BYTES_PER_SECOND = SAMPLE_RATE * 2 // mono 16-bit PCM
+        // Keep a bounded queue: the Bluetooth hardware buffer cannot be reduced here.
         private const val MAX_PENDING_AUDIO_MS = 750L
         private const val TARGET_TRACK_BUFFER_MS = 120
         private const val MAX_PENDING_BYTES = BYTES_PER_SECOND * MAX_PENDING_AUDIO_MS / 1000L
