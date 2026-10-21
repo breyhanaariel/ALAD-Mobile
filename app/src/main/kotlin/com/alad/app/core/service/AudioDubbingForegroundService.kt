@@ -63,6 +63,9 @@ class AudioDubbingForegroundService : Service() {
     @Volatile private var sessionStartedMs = 0L
     private var lastRecoveryMs = 0L
     private var lastActiveSourceMs = 0L
+    @Volatile private var activeSourceLang = ""
+    @Volatile private var activeTargetLang = ""
+    @Volatile private var activeApiKey = ""
     private var recoveryCount = 0
     private val stallAfterMs = 9000L
     private val recoveryCooldownMs = 30000L
@@ -106,6 +109,15 @@ class AudioDubbingForegroundService : Service() {
 
     private fun startDubbing(resultCode: Int, data: Intent) {
         isRunning.value = true
+        firstCaptureMs = 0L
+        firstResponseMs = 0L
+        captureBytes = 0L
+        responseBytes = 0L
+        receivedAudioChunks = 0
+        lastCaptureLogMs = 0L
+        lastResponseLogMs = 0L
+        lastAudibleCaptureMs = 0L
+        lastQuietLogMs = 0L
         lastResponseReceivedMs = 0L
         lastActiveSourceMs = 0L
         lastRecoveryMs = 0L
@@ -122,6 +134,9 @@ class AudioDubbingForegroundService : Service() {
             val targetLang = repository.targetLangFlow.first()
             val sourceLang = repository.sourceLangFlow.first()
             val volumeRatio = repository.volumeRatioFlow.first()
+            activeApiKey = apiKey
+            activeSourceLang = sourceLang
+            activeTargetLang = targetLang
             
             webSocketManager = ALADWebSocketManager(OkHttpClient())
             
@@ -169,6 +184,11 @@ class AudioDubbingForegroundService : Service() {
                     if (current != previous) {
                         previous = current
                         val currentKey = repository.apiKeyFlow.first()
+                        activeApiKey = currentKey
+                        activeSourceLang = current.first
+                        activeTargetLang = current.second
+                        sessionStartedMs = android.os.SystemClock.elapsedRealtime()
+                        lastResponseReceivedMs = 0L
                         webSocketManager?.disconnect()
                         webSocketManager?.connect(currentKey, current.first, current.second)
                     }
@@ -212,7 +232,7 @@ class AudioDubbingForegroundService : Service() {
                     } else if (lastAudibleCaptureMs > 0L && now - lastAudibleCaptureMs >= quietAfterMs) {
                         if (!sourceQuiet) {
                             sourceQuiet = true
-                            Log.w(TAG, "Silence diagnostics: sustained source quiet for ${now - lastAudibleCaptureMs}ms; suppressing late output")
+                            Log.i(TAG, "Silence diagnostics: sustained source quiet for ${now - lastAudibleCaptureMs}ms; preserving translated output")
                         }
                     }
                     // Only restart after a sustained response stall during active source audio.
@@ -231,7 +251,7 @@ class AudioDubbingForegroundService : Service() {
                             manager.disconnect()
                             sessionStartedMs = now
                             lastResponseReceivedMs = 0L
-                            manager.connect(apiKey, sourceLang, targetLang)
+                            manager.connect(activeApiKey, activeSourceLang, activeTargetLang)
                         }
                     }
                     webSocketManager?.sendAudioData(pcmData)
